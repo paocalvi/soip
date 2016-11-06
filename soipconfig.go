@@ -3,22 +3,71 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/tarm/serial"
 )
 
-type SoipConfig struct {
-	Port     uint16
+type IIStopBits byte
+type IIParity byte
+type FileOpeningStatus byte
+
+const (
+	IIStop1     IIStopBits = iota
+	IIStop1Half IIStopBits = iota
+	IIStop2     IIStopBits = iota
+)
+
+const (
+	IIParityNone  IIParity = iota
+	IIParityOdd   IIParity = iota
+	IIParityEven  IIParity = iota
+	IIParityMark  IIParity = iota // parity bit is always 1
+	IIParitySpace IIParity = iota // parity bit is always 0
+)
+
+const (
+	FOS_INUSE  FileOpeningStatus = iota
+	FOS_CLOSED FileOpeningStatus = iota
+)
+
+type WriterStatus int
+
+type WriterData struct {
+	LastPublished WriterStatus
+}
+
+type WriterFileEntity struct {
+	WriterData
+	TheFile    *os.File
+	fileStatus FileOpeningStatus
+}
+
+type WriterConnEntity struct {
+	WriterData
+	TheConn *net.Conn
+}
+
+const (
+	NOTHING WriterStatus = iota
+	TX      WriterStatus = iota
+	RX      WriterStatus = iota
+)
+
+type IISerialConfig struct {
 	Serial   string
 	Baud     uint32
 	DataBits byte
-	Parity   serial.Parity
-	StopBits serial.StopBits
-	Master   bool
+	Parity   IIParity
+	StopBits IIStopBits
+}
+
+type SoipConfig struct {
+	Port uint16
+	IISerialConfig
+	Master bool
 }
 
 type SoipTotalConfig struct {
@@ -30,6 +79,8 @@ type SoipStatus struct {
 	BytesWritten uint64
 	BytesRead    uint64
 	Active       bool
+	Sniff        map[int]*WriterConnEntity
+	Record       *WriterFileEntity
 }
 
 type SoipTotalStatus struct {
@@ -84,19 +135,19 @@ func readConfig(path string) (config []SoipConfig, err error) {
 		case '5':
 			datasize = byte(5)
 		}
-		stopbits := serial.Stop1
+		stopbits := IIStop1
 		switch options[2] {
 		case '2':
-			stopbits = serial.Stop2
+			stopbits = IIStop2
 		}
-		parity := serial.ParityNone
+		parity := IIParityNone
 		switch options[1] {
 		case 'O':
-			parity = serial.ParityOdd
+			parity = IIParityOdd
 		case 'E':
-			parity = serial.ParityEven
+			parity = IIParityEven
 		}
-		uno := SoipConfig{Port: port16, Serial: serialname, Baud: speed32, DataBits: datasize, Parity: parity, StopBits: stopbits, Master: master}
+		uno := SoipConfig{Port: port16, IISerialConfig: IISerialConfig{Serial: serialname, Baud: speed32, DataBits: datasize, Parity: parity, StopBits: stopbits}, Master: master}
 		config = append(config, uno)
 	}
 	return config, nil
@@ -114,10 +165,12 @@ func ReadTotalConfig(path string) (soipTotalConfig SoipTotalConfig, err error) {
 	return soipTotalConfig, err
 }
 
+/*
 func (s *SoipTotalConfig) getConfigForPort(port uint16) (result SoipConfig, ok bool) {
 	result, ok = s.InternalData[port]
 	return result, ok
 }
+*/
 
 func (sc SoipConfig) getKey() (result string) {
 	result = strconv.FormatInt(int64(sc.Port), 10) + ":" + sc.Serial
